@@ -18,7 +18,7 @@ Requires macOS 26 or later. Apple Silicon and Intel.
 3. Go to **System Settings → Privacy & Security**, scroll down, click **Open Anyway** next to RuEn, and confirm.
    (Or in Terminal: `xattr -dr com.apple.quarantine /Applications/RuEn.app`, then open it.)
 4. RuEn asks for **Accessibility** access. Allow it in **System Settings → Privacy & Security → Accessibility**. It needs this to see and type keys.
-5. "rE" appears in the menu bar and its menu opens. Choose **Download translation to this Mac…** to translate offline, and **Launch at login** if you want it always on.
+5. "rE" appears in the menu bar and its menu opens. Choose **Скачать перевод на этот Mac…** (download translation) to translate offline, and **Запускать при входе** (launch at login) to keep it always on.
 
 Type something in Russian anywhere and press ё.
 

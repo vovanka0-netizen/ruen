@@ -4,7 +4,7 @@ Type in Russian, press **ё**, get English. In any Mac app, including the termin
 
 RuEn is a tiny menu bar app. It remembers what you typed in the current field. When you press the hotkey, it erases that text and types the English translation in its place. Nothing to select, no popup, no copy-paste.
 
-- Works everywhere you can type: Terminal, Telegram, Slack, browsers, Claude Code, Notes.
+- Meant for any app with a text field. So far tested in Terminal (Claude Code); reports from other apps are welcome.
 - Translates on your Mac with Apple's built-in Translation. No account, no API key. Falls back to Google Translate if the Russian model isn't downloaded.
 - Hotkey is **ё** by default (the key left of 1 or above Return on a Russian layout). You can set any other key in the menu.
 - If you haven't typed anything, it translates the selected text instead.

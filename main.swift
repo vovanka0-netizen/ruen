@@ -6,6 +6,7 @@
 import Carbon
 import Cocoa
 import ServiceManagement
+import SwiftUI
 import Translation
 
 let ru = Locale.Language(identifier: "ru")
@@ -113,6 +114,17 @@ func isHotkey(_ code: Int64, _ flags: CGEventFlags, _ s: String) -> Bool {
 
 // ---------- нажатия ----------
 
+// Свой источник: наши нажатия не смешиваются с клавишами, которые человек держит.
+let source = CGEventSource(stateID: .privateState)
+
+// Ждём, пока отпустят ⌃⌥⇧⌘ от сочетания перевода, иначе Backspace станет ⌥Backspace и т. п.
+func waitForModifiersUp() {
+  for _ in 0..<200 {
+    if CGEventSource.flagsState(.hidSystemState).isDisjoint(with: modMask) { return }
+    usleep(10_000)
+  }
+}
+
 func post(_ e: CGEvent?) {
   guard let e else { return }
   e.setIntegerValueField(.eventSourceUserData, value: ourMark)
@@ -122,7 +134,7 @@ func post(_ e: CGEvent?) {
 
 func pressKey(_ code: CGKeyCode, flags: CGEventFlags = []) {
   for down in [true, false] {
-    let e = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down)
+    let e = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down)
     e?.flags = flags
     post(e)
   }
@@ -134,7 +146,7 @@ func typeText(_ s: String) {
   while i < u.count {
     var chunk = Array(u[i..<min(i + 20, u.count)])
     for down in [true, false] {
-      let e = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down)
+      let e = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: down)
       e?.flags = []
       e?.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: &chunk)
       post(e)
@@ -151,6 +163,7 @@ func replaceTyped() {
     let result = await translate(text)
     DispatchQueue.global().async {
       if let result {
+        waitForModifiersUp()
         for _ in 0..<text.count { pressKey(51) }  // Backspace
         typeText(result)
       } else {
@@ -167,6 +180,7 @@ func translateSelection() {
     let pb = NSPasteboard.general
     let saved = pb.string(forType: .string)
     let before = pb.changeCount
+    waitForModifiersUp()
     pressKey(8, flags: .maskCommand)  // ⌘C
     usleep(150_000)
     guard pb.changeCount != before, let text = pb.string(forType: .string), hasCyrillic(text) else {
@@ -265,6 +279,36 @@ func startTap() -> Bool {
   return true
 }
 
+// ---------- скачивание модели перевода ----------
+// Скачать модель можно только через SwiftUI: .translationTask + prepareTranslation()
+// показывает системный запрос. В Настройках кнопки для этого может не быть.
+
+final class DownloadState: ObservableObject {
+  @Published var config: TranslationSession.Configuration?
+  @Published var message = "macOS спросит, скачать ли русский → английский. Нажмите «Скачать»."
+}
+
+struct DownloadView: View {
+  @ObservedObject var state: DownloadState
+  var done: () -> Void
+  var body: some View {
+    Text(state.message).multilineTextAlignment(.center).padding(30).frame(width: 380)
+      .onAppear { state.config = .init(source: ru, target: en) }
+      .translationTask(state.config) { session in
+        do {
+          try await session.prepareTranslation()
+          let ok = await LanguageAvailability().status(from: ru, to: en) == .installed
+          await MainActor.run {
+            state.message = ok ? "Готово, перевод работает без интернета. Окно можно закрыть." : "Не скачалось, попробуйте ещё раз."
+            done()
+          }
+        } catch {
+          await MainActor.run { state.message = "Не получилось: \(error.localizedDescription)" }
+        }
+      }
+  }
+}
+
 // ---------- значок в строке меню ----------
 
 class App: NSObject, NSApplicationDelegate {
@@ -273,6 +317,8 @@ class App: NSObject, NSApplicationDelegate {
   let change = NSMenuItem(title: "Сменить клавишу…", action: #selector(record), keyEquivalent: "")
   let reset = NSMenuItem(title: "Вернуть ё", action: #selector(resetHotkey), keyEquivalent: "")
   let engine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+  let download = NSMenuItem(title: "Скачать перевод на этот Mac…", action: #selector(downloadModel), keyEquivalent: "")
+  var downloadWindow: NSWindow?
   let login = NSMenuItem(title: "Запускать при входе", action: #selector(flipLogin), keyEquivalent: "")
   let access = NSMenuItem(title: "Нет доступа: Настройки → Конфиденциальность → Универсальный доступ",
                           action: #selector(openSettings), keyEquivalent: "")
@@ -280,8 +326,8 @@ class App: NSObject, NSApplicationDelegate {
   func applicationDidFinishLaunching(_ n: Notification) {
     statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let menu = NSMenu()
-    for item in [toggle, change, reset, access, login] { item.target = self }
-    for item in [toggle, .separator(), hotkey, change, reset, .separator(), engine, access, login, .separator(),
+    for item in [toggle, change, reset, access, login, download] { item.target = self }
+    for item in [toggle, .separator(), hotkey, change, reset, .separator(), engine, download, access, login, .separator(),
                  NSMenuItem(title: "Выйти", action: #selector(NSApp.terminate), keyEquivalent: "q")] {
       menu.addItem(item)
     }
@@ -336,9 +382,8 @@ class App: NSObject, NSApplicationDelegate {
     access.isHidden = tap != nil
     Task {
       let st = await LanguageAvailability().status(from: ru, to: en)
-      engine.title = st == .installed
-        ? "Перевод: Apple, на этом Mac"
-        : "Перевод: Google (скачайте русский в Настройках → Язык и регион → Языки перевода)"
+      engine.title = st == .installed ? "Перевод: Apple, на этом Mac" : "Перевод: Google (через интернет)"
+      download.isHidden = st == .installed
     }
   }
 
@@ -367,6 +412,19 @@ class App: NSObject, NSApplicationDelegate {
   @objc func resetHotkey() {
     setHotkey(code: -1, mods: 0, name: "ё")
     refresh()
+  }
+
+  @objc func downloadModel() {
+    if downloadWindow == nil {
+      let w = NSWindow(contentRect: .zero, styleMask: [.titled, .closable], backing: .buffered, defer: false)
+      w.title = "RuEn: перевод на этом Mac"
+      w.isReleasedWhenClosed = false
+      w.contentView = NSHostingView(rootView: DownloadView(state: DownloadState()) { self.refresh() })
+      w.center()
+      downloadWindow = w
+    }
+    NSApp.activate(ignoringOtherApps: true)
+    downloadWindow?.makeKeyAndOrderFront(nil)
   }
 
   @objc func openSettings() {

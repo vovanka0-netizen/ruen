@@ -5,6 +5,7 @@
 
 import Carbon
 import Cocoa
+import ServiceManagement
 import Translation
 
 let ru = Locale.Language(identifier: "ru")
@@ -237,7 +238,17 @@ func onEvent(_ type: CGEventType, _ event: CGEvent) -> CGEvent? {
   return event
 }
 
+// Если доступ отобрали, а перехват ещё работает, macOS может перестать принимать
+// нажатия вообще. Поэтому сами снимаем перехват и ждём, пока доступ вернут.
+func stopTap() {
+  guard let t = tap else { return }
+  CGEvent.tapEnable(tap: t, enable: false)
+  CFMachPortInvalidate(t)
+  tap = nil
+}
+
 func startTap() -> Bool {
+  guard AXIsProcessTrusted() else { return false }
   let mask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.leftMouseDown.rawValue)
     | (1 << CGEventType.rightMouseDown.rawValue)
   tap = CGEvent.tapCreate(
@@ -262,14 +273,15 @@ class App: NSObject, NSApplicationDelegate {
   let change = NSMenuItem(title: "Сменить клавишу…", action: #selector(record), keyEquivalent: "")
   let reset = NSMenuItem(title: "Вернуть ё", action: #selector(resetHotkey), keyEquivalent: "")
   let engine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+  let login = NSMenuItem(title: "Запускать при входе", action: #selector(flipLogin), keyEquivalent: "")
   let access = NSMenuItem(title: "Нет доступа: Настройки → Конфиденциальность → Универсальный доступ",
                           action: #selector(openSettings), keyEquivalent: "")
 
   func applicationDidFinishLaunching(_ n: Notification) {
     statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let menu = NSMenu()
-    for item in [toggle, change, reset, access] { item.target = self }
-    for item in [toggle, .separator(), hotkey, change, reset, .separator(), engine, access, .separator(),
+    for item in [toggle, change, reset, access, login] { item.target = self }
+    for item in [toggle, .separator(), hotkey, change, reset, .separator(), engine, access, login, .separator(),
                  NSMenuItem(title: "Выйти", action: #selector(NSApp.terminate), keyEquivalent: "q")] {
       menu.addItem(item)
     }
@@ -283,6 +295,30 @@ class App: NSObject, NSApplicationDelegate {
     let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
     _ = AXIsProcessTrustedWithOptions(opts)
     tryStart()
+    Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
+      if tap != nil && !AXIsProcessTrusted() {
+        stopTap()
+        self.tryStart()
+      }
+    }
+
+    // Запустили руками, а не при входе в систему: сразу показываем меню,
+    // иначе не видно, что программа открылась (значок мог спрятаться за вырезом экрана).
+    let ev = NSAppleEventManager.shared().currentAppleEvent
+    if ev?.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue != keyAELaunchedAsLogInItem {
+      showMenu()
+    }
+  }
+
+  func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+    showMenu()
+    return false
+  }
+
+  func showMenu() {
+    DispatchQueue.main.async {
+      statusItem.menu?.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+    }
   }
 
   func tryStart() {
@@ -296,6 +332,7 @@ class App: NSObject, NSApplicationDelegate {
     toggle.state = enabled ? .on : .off
     hotkey.title = recording ? "Нажмите новую клавишу (Esc — отмена)…" : "Клавиша перевода: \(hotName)"
     reset.isHidden = hotCode < 0
+    login.state = SMAppService.mainApp.status == .enabled ? .on : .off
     access.isHidden = tap != nil
     Task {
       let st = await LanguageAvailability().status(from: ru, to: en)
@@ -309,6 +346,15 @@ class App: NSObject, NSApplicationDelegate {
     enabled.toggle()
     UserDefaults.standard.set(enabled, forKey: "enabled")
     typed = ""
+    refresh()
+  }
+
+  @objc func flipLogin() {
+    if SMAppService.mainApp.status == .enabled {
+      try? SMAppService.mainApp.unregister()
+    } else {
+      try? SMAppService.mainApp.register()
+    }
     refresh()
   }
 

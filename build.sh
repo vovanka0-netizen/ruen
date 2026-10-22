@@ -1,7 +1,7 @@
 #!/bin/sh
 # Собирает dist/RuEn.app из main.swift.
 set -e
-VERSION=0.2
+VERSION=0.3
 cd "$(dirname "$0")"
 APP=dist/RuEn.app
 rm -rf "$APP"
@@ -23,6 +23,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSUIElement</key><true/>
 </dict></plist>
 PLIST
-codesign --force --sign - "$APP"
+# Своим сертификатом «RuEn Local Signing», если он есть в Связке ключей: тогда macOS
+# узнаёт программу после пересборки и не спрашивает доступ заново. Иначе ad-hoc.
+if security find-certificate -c "RuEn Local Signing" >/dev/null 2>&1; then
+  codesign --force --sign "RuEn Local Signing" "$APP"
+else
+  codesign --force --sign - "$APP"
+fi
 (cd dist && rm -f RuEn-$VERSION.zip && ditto -c -k --keepParent RuEn.app RuEn-$VERSION.zip)
 echo "Готово: $APP и dist/RuEn-$VERSION.zip"
